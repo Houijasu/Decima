@@ -4,8 +4,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 
 using Decima.Data;
-using Decima.Models;
-using Decima.UI;
 
 using Spectre.Console;
 using Spectre.Console.Cli;

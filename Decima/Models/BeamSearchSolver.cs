@@ -2,8 +2,6 @@ namespace Decima.Models;
 
 using Decima.Data;
 
-using TorchSharp;
-
 using static TorchSharp.torch;
 
 /// <summary>

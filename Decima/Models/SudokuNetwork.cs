@@ -1,6 +1,5 @@
 namespace Decima.Models;
 
-using TorchSharp;
 using TorchSharp.Modules;
 
 using static TorchSharp.torch;

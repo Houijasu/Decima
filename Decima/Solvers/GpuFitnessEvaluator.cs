@@ -1,7 +1,5 @@
 namespace Decima.Solvers;
 
-using TorchSharp;
-
 using static TorchSharp.torch;
 
 /// <summary>
