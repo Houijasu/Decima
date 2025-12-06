@@ -8,6 +8,7 @@ using Spectre.Console;
 /// <summary>
 /// Main genetic algorithm solver for Sudoku puzzles.
 /// Supports both pure GA and hybrid ML+GA modes.
+/// Features: adaptive mutation, restarts, constraint propagation.
 /// </summary>
 public sealed class GeneticSolver : IDisposable
 {
@@ -54,17 +55,33 @@ public sealed class GeneticSolver : IDisposable
     {
         var startTime = DateTime.UtcNow;
 
+        // Apply constraint propagation if enabled
+        var workingPuzzle = puzzle;
+        if (_options.UseConstraintPropagation)
+        {
+            workingPuzzle = ApplyConstraintPropagation(puzzle);
+            if (_options.Verbose && !workingPuzzle.Equals(puzzle))
+            {
+                var filled = puzzle.EmptyCellCount - workingPuzzle.EmptyCellCount;
+                AnsiConsole.MarkupLine($"[dim]Constraint propagation filled {filled} cells[/]");
+            }
+        }
+
         // Initialize population
-        var population = InitializePopulation(puzzle);
+        var population = InitializePopulation(workingPuzzle);
 
         // Initial evaluation
         _fitnessEvaluator.EvaluatePopulation(population);
 
         var bestFitness = population.Min(c => c.Fitness ?? int.MaxValue);
+        var globalBestFitness = bestFitness;
         var generationsWithoutImprovement = 0;
         var totalGenerations = 0;
+        var restartCount = 0;
+        var currentMutationRate = _options.MutationRate;
 
         Chromosome? bestSolution = null;
+        Chromosome? globalBestSolution = population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
 
         if (_options.Verbose)
         {
@@ -95,20 +112,30 @@ public sealed class GeneticSolver : IDisposable
                 break;
             }
 
-            // Evolve population
-            population = EvolveGeneration(population, puzzle);
+            // Evolve population with current mutation rate
+            population = EvolveGeneration(population, workingPuzzle, currentMutationRate);
 
             // Evaluate new population
             _fitnessEvaluator.EvaluatePopulation(population);
 
             // Track progress
             var currentBest = population.Min(c => c.Fitness ?? int.MaxValue);
+            var currentBestChromosome = population.First(c => c.Fitness == currentBest);
+
             if (currentBest < bestFitness)
             {
                 bestFitness = currentBest;
                 generationsWithoutImprovement = 0;
+                currentMutationRate = _options.MutationRate; // Reset mutation rate on improvement
 
-                if (_options.Verbose && generation % 10 == 0)
+                // Track global best
+                if (currentBest < globalBestFitness)
+                {
+                    globalBestFitness = currentBest;
+                    globalBestSolution = currentBestChromosome.Copy();
+                }
+
+                if (_options.Verbose && generation % 50 == 0)
                 {
                     AnsiConsole.MarkupLine($"[dim]Gen {generation}:[/] fitness = {bestFitness}");
                 }
@@ -116,25 +143,68 @@ public sealed class GeneticSolver : IDisposable
             else
             {
                 generationsWithoutImprovement++;
+
+                // Adaptive mutation: increase mutation rate when stuck
+                if (generationsWithoutImprovement > 20)
+                {
+                    currentMutationRate = Math.Min(
+                        _options.MaxMutationRate,
+                        _options.MutationRate + (generationsWithoutImprovement - 20) * 0.01);
+                }
             }
 
-            // Adaptive mutation rate increase if stuck
-            if (generationsWithoutImprovement > 50)
+            // Diversity injection if moderately stuck
+            if (generationsWithoutImprovement > 30 && generationsWithoutImprovement % 30 == 0)
             {
-                // Inject fresh random individuals
-                InjectDiversity(population, puzzle, 0.1);
+                InjectDiversity(population, workingPuzzle, 0.2);
                 _fitnessEvaluator.EvaluatePopulation(population);
-                generationsWithoutImprovement = 0;
 
                 if (_options.Verbose)
                 {
-                    AnsiConsole.MarkupLine("[dim]Injecting diversity...[/]");
+                    AnsiConsole.MarkupLine($"[dim]Injecting diversity (mutation rate: {currentMutationRate:P0})...[/]");
+                }
+            }
+
+            // Restart if severely stuck
+            if (generationsWithoutImprovement >= _options.StagnationThreshold)
+            {
+                if (restartCount < _options.MaxRestarts)
+                {
+                    restartCount++;
+                    if (_options.Verbose)
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]Restart {restartCount}/{_options.MaxRestarts} (stuck at fitness {bestFitness})[/]");
+                    }
+
+                    // Keep best solution and reinitialize rest
+                    population = InitializePopulation(workingPuzzle);
+                    
+                    // Seed with global best
+                    if (globalBestSolution != null)
+                    {
+                        population[0] = globalBestSolution.Copy();
+                        // Add mutations of global best
+                        for (var i = 1; i < Math.Min(10, population.Count); i++)
+                        {
+                            var mutated = globalBestSolution.Copy();
+                            for (var m = 0; m < i; m++)
+                            {
+                                mutated = GeneticOperators.SmartMutation(mutated, workingPuzzle);
+                            }
+                            population[i] = mutated;
+                        }
+                    }
+
+                    _fitnessEvaluator.EvaluatePopulation(population);
+                    bestFitness = population.Min(c => c.Fitness ?? int.MaxValue);
+                    generationsWithoutImprovement = 0;
+                    currentMutationRate = _options.MutationRate;
                 }
             }
         }
 
         // Get best result
-        bestSolution ??= population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
+        bestSolution ??= globalBestSolution ?? population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
 
         var elapsed = DateTime.UtcNow - startTime;
 
@@ -145,7 +215,8 @@ public sealed class GeneticSolver : IDisposable
             IsSolved = bestSolution.IsSolution,
             Generations = totalGenerations,
             ElapsedTime = elapsed,
-            PopulationSize = _options.PopulationSize
+            PopulationSize = _options.PopulationSize,
+            Restarts = restartCount
         };
     }
 
@@ -156,6 +227,18 @@ public sealed class GeneticSolver : IDisposable
     {
         var startTime = DateTime.UtcNow;
         GeneticSolverResult? result = null;
+
+        // Apply constraint propagation if enabled
+        var workingPuzzle = puzzle;
+        if (_options.UseConstraintPropagation)
+        {
+            workingPuzzle = ApplyConstraintPropagation(puzzle);
+            if (!workingPuzzle.Equals(puzzle))
+            {
+                var filled = puzzle.EmptyCellCount - workingPuzzle.EmptyCellCount;
+                AnsiConsole.MarkupLine($"[dim]Constraint propagation filled {filled} cells[/]");
+            }
+        }
 
         AnsiConsole.Progress()
             .AutoClear(false)
@@ -170,11 +253,16 @@ public sealed class GeneticSolver : IDisposable
                 var task = ctx.AddTask("[cyan]Evolving...[/]", maxValue: _options.MaxGenerations);
 
                 // Initialize population
-                var population = InitializePopulation(puzzle);
+                var population = InitializePopulation(workingPuzzle);
                 _fitnessEvaluator.EvaluatePopulation(population);
 
                 var bestFitness = population.Min(c => c.Fitness ?? int.MaxValue);
+                var globalBestFitness = bestFitness;
                 var generationsWithoutImprovement = 0;
+                var restartCount = 0;
+                var currentMutationRate = _options.MutationRate;
+
+                Chromosome? globalBestSolution = population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
 
                 for (var generation = 0; generation < _options.MaxGenerations; generation++)
                 {
@@ -193,41 +281,88 @@ public sealed class GeneticSolver : IDisposable
                             IsSolved = true,
                             Generations = generation + 1,
                             ElapsedTime = DateTime.UtcNow - startTime,
-                            PopulationSize = _options.PopulationSize
+                            PopulationSize = _options.PopulationSize,
+                            Restarts = restartCount
                         };
                         return;
                     }
 
-                    // Evolve
-                    population = EvolveGeneration(population, puzzle);
+                    // Evolve with adaptive mutation
+                    population = EvolveGeneration(population, workingPuzzle, currentMutationRate);
                     _fitnessEvaluator.EvaluatePopulation(population);
 
                     // Track progress
                     var currentBest = population.Min(c => c.Fitness ?? int.MaxValue);
+                    var currentBestChromosome = population.First(c => c.Fitness == currentBest);
+
                     if (currentBest < bestFitness)
                     {
                         bestFitness = currentBest;
                         generationsWithoutImprovement = 0;
+                        currentMutationRate = _options.MutationRate;
+
+                        if (currentBest < globalBestFitness)
+                        {
+                            globalBestFitness = currentBest;
+                            globalBestSolution = currentBestChromosome.Copy();
+                        }
                     }
                     else
                     {
                         generationsWithoutImprovement++;
+
+                        // Adaptive mutation
+                        if (generationsWithoutImprovement > 20)
+                        {
+                            currentMutationRate = Math.Min(
+                                _options.MaxMutationRate,
+                                _options.MutationRate + (generationsWithoutImprovement - 20) * 0.01);
+                        }
                     }
 
                     // Diversity injection
-                    if (generationsWithoutImprovement > 50)
+                    if (generationsWithoutImprovement > 30 && generationsWithoutImprovement % 30 == 0)
                     {
-                        InjectDiversity(population, puzzle, 0.1);
+                        InjectDiversity(population, workingPuzzle, 0.2);
                         _fitnessEvaluator.EvaluatePopulation(population);
-                        generationsWithoutImprovement = 0;
+                    }
+
+                    // Restart if stuck
+                    if (generationsWithoutImprovement >= _options.StagnationThreshold)
+                    {
+                        if (restartCount < _options.MaxRestarts)
+                        {
+                            restartCount++;
+                            task.Description = $"[yellow]Restart {restartCount}[/] [dim]fitness={bestFitness}[/]";
+
+                            population = InitializePopulation(workingPuzzle);
+                            if (globalBestSolution != null)
+                            {
+                                population[0] = globalBestSolution.Copy();
+                                for (var i = 1; i < Math.Min(10, population.Count); i++)
+                                {
+                                    var mutated = globalBestSolution.Copy();
+                                    for (var m = 0; m < i; m++)
+                                    {
+                                        mutated = GeneticOperators.SmartMutation(mutated, workingPuzzle);
+                                    }
+                                    population[i] = mutated;
+                                }
+                            }
+
+                            _fitnessEvaluator.EvaluatePopulation(population);
+                            bestFitness = population.Min(c => c.Fitness ?? int.MaxValue);
+                            generationsWithoutImprovement = 0;
+                            currentMutationRate = _options.MutationRate;
+                        }
                     }
 
                     task.Value = generation + 1;
-                    task.Description = $"[cyan]Gen {generation + 1}[/] [dim]fitness={bestFitness}[/]";
+                    task.Description = $"[cyan]Gen {generation + 1}[/] [dim]fitness={bestFitness} mut={currentMutationRate:P0}[/]";
                 }
 
                 // Get best result
-                var best = population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
+                var best = globalBestSolution ?? population.OrderBy(c => c.Fitness ?? int.MaxValue).First();
                 result = new GeneticSolverResult
                 {
                     Solution = best.ToGrid(),
@@ -235,11 +370,168 @@ public sealed class GeneticSolver : IDisposable
                     IsSolved = best.IsSolution,
                     Generations = _options.MaxGenerations,
                     ElapsedTime = DateTime.UtcNow - startTime,
-                    PopulationSize = _options.PopulationSize
+                    PopulationSize = _options.PopulationSize,
+                    Restarts = restartCount
                 };
             });
 
         return result!;
+    }
+
+    /// <summary>
+    /// Applies constraint propagation to fill in forced cells.
+    /// Uses naked singles and hidden singles strategies.
+    /// </summary>
+    private static SudokuGrid ApplyConstraintPropagation(SudokuGrid puzzle)
+    {
+        var cells = new int[9, 9];
+        for (var row = 0; row < 9; row++)
+        {
+            for (var col = 0; col < 9; col++)
+            {
+                cells[row, col] = puzzle[row, col];
+            }
+        }
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+
+            for (var row = 0; row < 9; row++)
+            {
+                for (var col = 0; col < 9; col++)
+                {
+                    if (cells[row, col] != 0) continue;
+
+                    var candidates = GetCandidates(cells, row, col);
+
+                    // Naked single: only one candidate
+                    if (candidates.Count == 1)
+                    {
+                        cells[row, col] = candidates.First();
+                        changed = true;
+                        continue;
+                    }
+
+                    // Hidden single in row
+                    foreach (var digit in candidates)
+                    {
+                        var isHiddenSingle = true;
+                        for (var c = 0; c < 9; c++)
+                        {
+                            if (c != col && cells[row, c] == 0)
+                            {
+                                var otherCandidates = GetCandidates(cells, row, c);
+                                if (otherCandidates.Contains(digit))
+                                {
+                                    isHiddenSingle = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (isHiddenSingle)
+                        {
+                            cells[row, col] = digit;
+                            changed = true;
+                            break;
+                        }
+                    }
+
+                    if (cells[row, col] != 0) continue;
+
+                    // Hidden single in column
+                    foreach (var digit in candidates)
+                    {
+                        var isHiddenSingle = true;
+                        for (var r = 0; r < 9; r++)
+                        {
+                            if (r != row && cells[r, col] == 0)
+                            {
+                                var otherCandidates = GetCandidates(cells, r, col);
+                                if (otherCandidates.Contains(digit))
+                                {
+                                    isHiddenSingle = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (isHiddenSingle)
+                        {
+                            cells[row, col] = digit;
+                            changed = true;
+                            break;
+                        }
+                    }
+
+                    if (cells[row, col] != 0) continue;
+
+                    // Hidden single in box
+                    var boxRow = (row / 3) * 3;
+                    var boxCol = (col / 3) * 3;
+                    foreach (var digit in candidates)
+                    {
+                        var isHiddenSingle = true;
+                        for (var r = boxRow; r < boxRow + 3 && isHiddenSingle; r++)
+                        {
+                            for (var c = boxCol; c < boxCol + 3; c++)
+                            {
+                                if ((r != row || c != col) && cells[r, c] == 0)
+                                {
+                                    var otherCandidates = GetCandidates(cells, r, c);
+                                    if (otherCandidates.Contains(digit))
+                                    {
+                                        isHiddenSingle = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (isHiddenSingle)
+                        {
+                            cells[row, col] = digit;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return SudokuGrid.FromArray(cells);
+    }
+
+    /// <summary>
+    /// Gets candidate values for a cell.
+    /// </summary>
+    private static HashSet<int> GetCandidates(int[,] cells, int row, int col)
+    {
+        var candidates = new HashSet<int> { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+
+        // Remove values in same row
+        for (var c = 0; c < 9; c++)
+        {
+            candidates.Remove(cells[row, c]);
+        }
+
+        // Remove values in same column
+        for (var r = 0; r < 9; r++)
+        {
+            candidates.Remove(cells[r, col]);
+        }
+
+        // Remove values in same box
+        var boxRow = (row / 3) * 3;
+        var boxCol = (col / 3) * 3;
+        for (var r = boxRow; r < boxRow + 3; r++)
+        {
+            for (var c = boxCol; c < boxCol + 3; c++)
+            {
+                candidates.Remove(cells[r, c]);
+            }
+        }
+
+        return candidates;
     }
 
     /// <summary>
@@ -294,9 +586,9 @@ public sealed class GeneticSolver : IDisposable
     }
 
     /// <summary>
-    /// Evolves a single generation.
+    /// Evolves a single generation with configurable mutation rate.
     /// </summary>
-    private List<Chromosome> EvolveGeneration(List<Chromosome> population, SudokuGrid puzzle)
+    private List<Chromosome> EvolveGeneration(List<Chromosome> population, SudokuGrid puzzle, double mutationRate)
     {
         var newPopulation = new List<Chromosome>(_options.PopulationSize);
 
@@ -313,16 +605,17 @@ public sealed class GeneticSolver : IDisposable
             MaxDegreeOfParallelism = _options.EffectiveParallelism
         }, i =>
         {
+            var localRandom = Random.Shared;
             var parent1 = GeneticOperators.TournamentSelect(population, _options.TournamentSize);
             var parent2 = GeneticOperators.TournamentSelect(population, _options.TournamentSize);
 
             Chromosome child1, child2;
 
             // Crossover
-            if (random.NextDouble() < _options.CrossoverRate)
+            if (localRandom.NextDouble() < _options.CrossoverRate)
             {
                 // Alternate between row and box crossover
-                if (random.NextDouble() < 0.5)
+                if (localRandom.NextDouble() < 0.5)
                 {
                     (child1, child2) = GeneticOperators.RowCrossover(parent1, parent2, puzzle);
                 }
@@ -337,20 +630,41 @@ public sealed class GeneticSolver : IDisposable
                 child2 = parent2.Copy();
             }
 
-            // Mutation
-            if (random.NextDouble() < _options.MutationRate)
+            // Mutation with adaptive rate
+            if (localRandom.NextDouble() < mutationRate)
             {
-                // Use smart mutation 50% of the time
-                child1 = random.NextDouble() < 0.5
+                // Use smart mutation more often when stuck (higher mutation rate)
+                var smartProbability = Math.Min(0.8, 0.5 + (mutationRate - _options.MutationRate) * 2);
+                child1 = localRandom.NextDouble() < smartProbability
                     ? GeneticOperators.SmartMutation(child1, puzzle)
                     : GeneticOperators.SwapMutation(child1, puzzle);
+
+                // Apply multiple mutations when mutation rate is high
+                if (mutationRate > 0.3)
+                {
+                    var extraMutations = (int)((mutationRate - 0.3) * 10);
+                    for (var m = 0; m < extraMutations; m++)
+                    {
+                        child1 = GeneticOperators.SmartMutation(child1, puzzle);
+                    }
+                }
             }
 
-            if (random.NextDouble() < _options.MutationRate)
+            if (localRandom.NextDouble() < mutationRate)
             {
-                child2 = random.NextDouble() < 0.5
+                var smartProbability = Math.Min(0.8, 0.5 + (mutationRate - _options.MutationRate) * 2);
+                child2 = localRandom.NextDouble() < smartProbability
                     ? GeneticOperators.SmartMutation(child2, puzzle)
                     : GeneticOperators.SwapMutation(child2, puzzle);
+
+                if (mutationRate > 0.3)
+                {
+                    var extraMutations = (int)((mutationRate - 0.3) * 10);
+                    for (var m = 0; m < extraMutations; m++)
+                    {
+                        child2 = GeneticOperators.SmartMutation(child2, puzzle);
+                    }
+                }
             }
 
             var idx = i * 2;
@@ -438,4 +752,9 @@ public sealed record GeneticSolverResult
     /// Population size used.
     /// </summary>
     public required int PopulationSize { get; init; }
+
+    /// <summary>
+    /// Number of restarts performed.
+    /// </summary>
+    public int Restarts { get; init; }
 }

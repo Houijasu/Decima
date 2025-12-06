@@ -17,9 +17,15 @@ public sealed record GeneticSolverOptions
     public int MaxGenerations { get; init; } = 1000;
 
     /// <summary>
-    /// Probability of mutation per chromosome (0.0 to 1.0).
+    /// Base probability of mutation per chromosome (0.0 to 1.0).
+    /// This will be adaptively increased when stuck.
     /// </summary>
     public double MutationRate { get; init; } = 0.1;
+
+    /// <summary>
+    /// Maximum mutation rate when adaptive mutation kicks in.
+    /// </summary>
+    public double MaxMutationRate { get; init; } = 0.5;
 
     /// <summary>
     /// Probability of crossover between parents (0.0 to 1.0).
@@ -67,6 +73,21 @@ public sealed record GeneticSolverOptions
     /// -1 means use all available processors.
     /// </summary>
     public int MaxParallelism { get; init; } = -1;
+
+    /// <summary>
+    /// Number of generations without improvement before triggering restart.
+    /// </summary>
+    public int StagnationThreshold { get; init; } = 100;
+
+    /// <summary>
+    /// Maximum number of restarts before giving up.
+    /// </summary>
+    public int MaxRestarts { get; init; } = 5;
+
+    /// <summary>
+    /// Whether to use constraint propagation to pre-fill forced cells.
+    /// </summary>
+    public bool UseConstraintPropagation { get; init; } = true;
 
     /// <summary>
     /// Gets the effective parallelism level.
