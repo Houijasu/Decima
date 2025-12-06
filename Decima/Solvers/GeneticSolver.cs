@@ -122,23 +122,24 @@ public sealed class GeneticSolver : IDisposable
             var currentBest = population.Min(c => c.Fitness ?? int.MaxValue);
             var currentBestChromosome = population.First(c => c.Fitness == currentBest);
 
+            // Track local population best
             if (currentBest < bestFitness)
             {
                 bestFitness = currentBest;
-                generationsWithoutImprovement = 0;
-                currentMutationRate = _options.MutationRate; // Reset mutation rate on improvement
-
-                // Track global best
-                if (currentBest < globalBestFitness)
-                {
-                    globalBestFitness = currentBest;
-                    globalBestSolution = currentBestChromosome.Copy();
-                }
-
+                
                 if (_options.Verbose && generation % 50 == 0)
                 {
                     AnsiConsole.MarkupLine($"[dim]Gen {generation}:[/] fitness = {bestFitness}");
                 }
+            }
+
+            // Track global best - only reset stagnation counter on GLOBAL improvement
+            if (currentBest < globalBestFitness)
+            {
+                globalBestFitness = currentBest;
+                globalBestSolution = currentBestChromosome.Copy();
+                generationsWithoutImprovement = 0;
+                currentMutationRate = _options.MutationRate;
             }
             else
             {
@@ -295,17 +296,19 @@ public sealed class GeneticSolver : IDisposable
                     var currentBest = population.Min(c => c.Fitness ?? int.MaxValue);
                     var currentBestChromosome = population.First(c => c.Fitness == currentBest);
 
+                    // Track local population best
                     if (currentBest < bestFitness)
                     {
                         bestFitness = currentBest;
+                    }
+
+                    // Track global best - only reset stagnation counter on GLOBAL improvement
+                    if (currentBest < globalBestFitness)
+                    {
+                        globalBestFitness = currentBest;
+                        globalBestSolution = currentBestChromosome.Copy();
                         generationsWithoutImprovement = 0;
                         currentMutationRate = _options.MutationRate;
-
-                        if (currentBest < globalBestFitness)
-                        {
-                            globalBestFitness = currentBest;
-                            globalBestSolution = currentBestChromosome.Copy();
-                        }
                     }
                     else
                     {
@@ -358,7 +361,8 @@ public sealed class GeneticSolver : IDisposable
                     }
 
                     task.Value = generation + 1;
-                    task.Description = $"[cyan]Gen {generation + 1}[/] [dim]fitness={bestFitness} mut={currentMutationRate:P0}[/]";
+                    var restartInfo = restartCount > 0 ? $" R{restartCount}" : "";
+                    task.Description = $"[cyan]Gen {generation + 1}{restartInfo}[/] [dim]fitness={globalBestFitness} mut={currentMutationRate:P0}[/]";
                 }
 
                 // Get best result
