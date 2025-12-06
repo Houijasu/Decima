@@ -1,0 +1,7 @@
+{
+  "Version": 2,
+  "InputChannels": 10,
+  "HiddenChannels": 512,
+  "OutputChannels": 9,
+  "NumResBlocks": 15
+}
