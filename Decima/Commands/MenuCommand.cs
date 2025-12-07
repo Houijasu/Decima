@@ -7,6 +7,16 @@ using Spectre.Console;
 using Spectre.Console.Cli;
 
 /// <summary>
+/// Result of a menu selection that can be cancelled with Escape.
+/// </summary>
+/// <typeparam name="T">The type of the selected value.</typeparam>
+public record MenuResult<T>(T? Value, bool Cancelled)
+{
+    public static MenuResult<T> Selected(T value) => new(value, false);
+    public static MenuResult<T> Escaped() => new(default, true);
+}
+
+/// <summary>
 /// Interactive menu command that dynamically discovers and presents all available commands.
 /// </summary>
 public sealed class MenuCommand : Command<MenuCommand.Settings>
@@ -133,17 +143,18 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         return options;
     }
 
-    private static string ShowMainMenu(List<CommandInfo> commands)
+    private static string? ShowMainMenu(List<CommandInfo> commands)
     {
         var choices = commands.Select(c => c.DisplayName).ToList();
         choices.Add("Exit");
 
-        return AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[cyan]What would you like to do?[/]")
-                .PageSize(10)
-                .HighlightStyle(new Style(Color.Cyan1))
-                .AddChoices(choices));
+        var result = ShowEscapableMenu("What would you like to do?", choices);
+        
+        // Escape from main menu means Exit
+        if (result.Cancelled)
+            return "Exit";
+            
+        return result.Value;
     }
 
     private static int ExecuteCommandWithMenu(CommandInfo command, CancellationToken cancellationToken)
@@ -156,20 +167,20 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         // If command has options, show configuration menu
         if (command.Options.Count > 0)
         {
-            var action = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[cyan]Choose an action:[/]")
-                    .HighlightStyle(new Style(Color.Cyan1))
-                    .AddChoices(["Run with defaults", "Configure options", "Back to menu"]));
+            var result = ShowEscapableMenu("Choose an action:", 
+                ["Run with defaults", "Configure options", "Back to menu"]);
 
-            if (action == "Back to menu")
+            if (result.Cancelled || result.Value == "Back to menu")
                 return -1;
 
             var args = new List<string> { command.Name.ToLower() };
 
-            if (action == "Configure options")
+            if (result.Value == "Configure options")
             {
-                args.AddRange(ConfigureOptions(command));
+                var configResult = ConfigureOptions(command);
+                if (configResult == null) // User pressed Escape
+                    return -1;
+                args.AddRange(configResult);
             }
 
             return RunCommand(args.ToArray());
@@ -180,7 +191,7 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         }
     }
 
-    private static List<string> ConfigureOptions(CommandInfo command)
+    private static List<string>? ConfigureOptions(CommandInfo command)
     {
         var args = new List<string>();
         var configuredValues = new Dictionary<string, object?>();
@@ -233,24 +244,19 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
             choices.Add("Reset to defaults");
             choices.Add("Back");
 
-            var choice = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[cyan]Select option to configure:[/]")
-                    .PageSize(15)
-                    .HighlightStyle(new Style(Color.Cyan1))
-                    .AddChoices(choices));
+            var result = ShowEscapableMenu("Select option to configure:", choices, 15);
 
-            if (choice == "Back")
-                return [];
+            if (result.Cancelled || result.Value == "Back")
+                return null; // Return null to indicate user wants to go back
 
-            if (choice == "Reset to defaults")
+            if (result.Value == "Reset to defaults")
             {
                 foreach (var option in command.Options)
                     configuredValues[option.Name] = option.DefaultValue;
                 continue;
             }
 
-            if (choice == "Run command")
+            if (result.Value == "Run command")
             {
                 // Build command line arguments
                 foreach (var option in command.Options)
@@ -264,13 +270,14 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
                 return args;
             }
 
-            if (choice == "---")
+            if (result.Value == "---")
                 continue;
 
             // Configure selected option
-            var selectedOption = command.Options.First(o => o.Name == choice);
+            var selectedOption = command.Options.First(o => o.Name == result.Value);
             var newValue = PromptForValue(selectedOption, configuredValues[selectedOption.Name]);
-            configuredValues[selectedOption.Name] = newValue;
+            if (newValue != null) // null means user cancelled
+                configuredValues[selectedOption.Name] = newValue;
         }
     }
 
@@ -292,28 +299,30 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         // Handle nullable types
         var underlyingType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
 
-        // Handle enums
+        // Handle enums - use escapable menu
         if (underlyingType.IsEnum)
         {
             var enumValues = Enum.GetNames(underlyingType).ToList();
-            var selected = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title($"[cyan]Select {option.Name}:[/]")
-                    .HighlightStyle(new Style(Color.Cyan1))
-                    .AddChoices(enumValues));
-            return Enum.Parse(underlyingType, selected);
+            var result = ShowEscapableMenu($"Select {option.Name}:", enumValues);
+            if (result.Cancelled)
+                return null; // User pressed Escape
+            return Enum.Parse(underlyingType, result.Value!);
         }
 
-        // Handle booleans
+        // Handle booleans - use escapable menu
         if (underlyingType == typeof(bool))
         {
-            return AnsiConsole.Confirm($"Enable {option.Name}?", (bool)(currentValue ?? false));
+            var result = ShowEscapableMenu($"Enable {option.Name}?", ["Yes", "No"]);
+            if (result.Cancelled)
+                return null;
+            return result.Value == "Yes";
         }
 
-        // Handle integers
+        // Handle integers - TextPrompt doesn't support Escape, but we show hint
         if (underlyingType == typeof(int))
         {
             var defaultInt = (int)(currentValue ?? option.DefaultValue ?? 0);
+            AnsiConsole.MarkupLine("[dim]Enter value (or press Enter for default):[/]");
             return AnsiConsole.Prompt(
                 new TextPrompt<int>($"[cyan]{option.Name}:[/]")
                     .DefaultValue(defaultInt)
@@ -324,6 +333,7 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         if (underlyingType == typeof(double))
         {
             var defaultDouble = (double)(currentValue ?? option.DefaultValue ?? 0.0);
+            AnsiConsole.MarkupLine("[dim]Enter value (or press Enter for default):[/]");
             return AnsiConsole.Prompt(
                 new TextPrompt<double>($"[cyan]{option.Name}:[/]")
                     .DefaultValue(defaultDouble)
@@ -332,6 +342,7 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
 
         // Handle strings
         var defaultStr = currentValue?.ToString() ?? option.DefaultValue?.ToString() ?? "";
+        AnsiConsole.MarkupLine("[dim]Enter value (or press Enter for default):[/]");
         return AnsiConsole.Prompt(
             new TextPrompt<string>($"[cyan]{option.Name}:[/]")
                 .DefaultValue(defaultStr)
@@ -378,6 +389,96 @@ public sealed class MenuCommand : Command<MenuCommand.Settings>
         if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
             return text;
         return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// Shows a selection menu that supports Escape key to go back.
+    /// </summary>
+    private static MenuResult<string> ShowEscapableMenu(string title, List<string> choices, int pageSize = 10)
+    {
+        var selectedIndex = 0;
+        var scrollOffset = 0;
+        var visibleCount = Math.Min(pageSize, choices.Count);
+
+        // Store initial cursor position for redrawing
+        var startTop = System.Console.CursorTop;
+
+        while (true)
+        {
+            // Calculate scroll window
+            if (selectedIndex < scrollOffset)
+                scrollOffset = selectedIndex;
+            else if (selectedIndex >= scrollOffset + visibleCount)
+                scrollOffset = selectedIndex - visibleCount + 1;
+
+            // Move cursor to start position and clear area
+            System.Console.SetCursorPosition(0, startTop);
+            
+            var panel = new Panel(RenderMenuChoices(choices, selectedIndex, scrollOffset, visibleCount))
+                .Header($"[cyan]{title}[/]")
+                .Border(BoxBorder.Rounded)
+                .BorderColor(Color.Grey);
+            
+            AnsiConsole.Write(panel);
+            AnsiConsole.MarkupLine("[dim]↑↓ Navigate • Enter Select • Esc Back[/]");
+
+            // Read key (must use System.Console for raw key input)
+            var key = System.Console.ReadKey(true);
+
+            switch (key.Key)
+            {
+                case ConsoleKey.UpArrow:
+                    selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : choices.Count - 1;
+                    break;
+                case ConsoleKey.DownArrow:
+                    selectedIndex = selectedIndex < choices.Count - 1 ? selectedIndex + 1 : 0;
+                    break;
+                case ConsoleKey.Enter:
+                    return MenuResult<string>.Selected(choices[selectedIndex]);
+                case ConsoleKey.Escape:
+                    return MenuResult<string>.Escaped();
+                case ConsoleKey.Home:
+                    selectedIndex = 0;
+                    break;
+                case ConsoleKey.End:
+                    selectedIndex = choices.Count - 1;
+                    break;
+                case ConsoleKey.PageUp:
+                    selectedIndex = Math.Max(0, selectedIndex - visibleCount);
+                    break;
+                case ConsoleKey.PageDown:
+                    selectedIndex = Math.Min(choices.Count - 1, selectedIndex + visibleCount);
+                    break;
+            }
+        }
+    }
+
+    private static string RenderMenuChoices(List<string> choices, int selectedIndex, int scrollOffset, int visibleCount)
+    {
+        var lines = new List<string>();
+        
+        if (scrollOffset > 0)
+            lines.Add("[dim]↑ more choices[/]");
+        
+        for (var i = scrollOffset; i < scrollOffset + visibleCount && i < choices.Count; i++)
+        {
+            var choice = choices[i];
+            if (i == selectedIndex)
+                lines.Add($"[cyan]> {Markup.Escape(StripMarkup(choice))}[/]");
+            else
+                lines.Add($"  {choice}");
+        }
+        
+        if (scrollOffset + visibleCount < choices.Count)
+            lines.Add("[dim]↓ more choices[/]");
+        
+        return string.Join("\n", lines);
+    }
+
+    private static string StripMarkup(string text)
+    {
+        // Simple markup stripper for display purposes
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\[.*?\]", "");
     }
 
     private record CommandInfo(
