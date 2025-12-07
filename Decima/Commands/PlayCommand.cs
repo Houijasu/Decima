@@ -1,4 +1,4 @@
-﻿namespace Decima.Commands;
+namespace Decima.Commands;
 
 using System.ComponentModel;
 using System.Diagnostics;
@@ -511,10 +511,6 @@ public sealed class PlayCommand : Command<PlayCommand.Settings>
             AnsiConsole.MarkupLine($"[bold green]Congratulations![/]");
             AnsiConsole.MarkupLine($"[dim]Time:[/] [white]{elapsed:mm\\:ss}[/]");
             AnsiConsole.MarkupLine($"[dim]Hints used:[/] [white]{_hintsUsed}[/]");
-
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[dim]Press any key to exit...[/]");
-            Console.ReadKey(true);
         }
 
         private static void RenderHelp()
