@@ -1,4 +1,4 @@
-﻿namespace Decima.Commands;
+namespace Decima.Commands;
 
 using System.ComponentModel;
 
@@ -145,7 +145,19 @@ public sealed class TrainCommand : Command<TrainCommand.Settings>
         if (resuming)
         {
             AnsiConsole.MarkupLine($"[cyan]Loading existing model from:[/] {settings.OutputPath}");
-            trainer.Load(settings.OutputPath);
+
+            try
+            {
+                trainer.Load(settings.OutputPath);
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Failed to load existing model:[/] {settings.OutputPath}");
+                AnsiConsole.MarkupLine($"[dim]Error: {ex.Message}[/]");
+                AnsiConsole.MarkupLine("[yellow]Starting fresh training instead.[/]");
+                resuming = false;
+            }
+
             AnsiConsole.WriteLine();
         }
 

@@ -10,6 +10,7 @@ A GPU-accelerated Sudoku solver powered by deep learning, featuring a convolutio
 - **Beam Search**: Explores multiple solution paths for higher accuracy
 - **Genetic Algorithm**: Alternative solver with GPU-accelerated fitness evaluation
 - **Hybrid Mode**: Combines ML predictions with genetic algorithm refinement
+- **ML-Guided Backtracking**: Uses neural network to prioritize search order
 - **Interactive Play**: Terminal-based Sudoku game with real-time validation
 - **Beautiful UI**: Spectre.Console-powered terminal interface
 
@@ -94,6 +95,9 @@ dotnet run --project Decima solve --generate --ga
 
 # Hybrid ML + GA solver
 dotnet run --project Decima solve --generate --hybrid
+
+# ML-guided backtracking (fast with ML prioritization)
+dotnet run --project Decima solve --generate --guided
 ```
 
 #### Solve Options
@@ -108,6 +112,7 @@ dotnet run --project Decima solve --generate --hybrid
 | `--compare` | false | Compare with backtracking solver |
 | `--ga` | false | Use genetic algorithm |
 | `--hybrid` | false | ML + GA hybrid solver |
+| `--guided` | false | ML-guided backtracking solver |
 
 ### Playing Sudoku
 
@@ -170,6 +175,7 @@ Scale Input × Attention
 - **Focal Loss**: Focuses training on hard examples with γ=2.0
 - **Constraint Loss**: Penalizes row/column/box violations
 - **Dynamic Weighting**: Constraint weight increases with difficulty
+- **Cosine Annealing LR**: Learning rate scheduler for smoother convergence
 - **Gradient Clipping**: Prevents exploding gradients
 
 ### Data Augmentation
@@ -205,13 +211,24 @@ Decima/
 │   ├── SudokuNetwork.cs       # CNN architecture
 │   └── SudokuTrainer.cs       # Training loop
 ├── Solvers/
+│   ├── Chromosome.cs          # GA candidate solution
+│   ├── GeneticOperators.cs    # Selection, crossover, mutation
 │   ├── GeneticSolver.cs       # GA solver
-│   ├── IslandModel.cs         # Parallel GA
-│   └── GpuFitnessEvaluator.cs # GPU fitness
+│   ├── GeneticSolverOptions.cs # GA configuration
+│   ├── GpuFitnessEvaluator.cs # GPU fitness evaluation
+│   └── IslandModel.cs         # Parallel island GA
 ├── UI/
 │   ├── SolveAnimation.cs      # Solving visualization
 │   └── SudokuGridRenderer.cs  # Grid rendering
+├── ConfiguratorExtensions.cs  # Command auto-discovery
 └── Program.cs
+
+Decima.Tests/                   # 105 unit tests
+├── HybridSolverTests.cs
+├── SudokuAugmentationTests.cs
+├── SudokuGeneratorTests.cs
+├── SudokuGridTests.cs
+└── SudokuValidatorTests.cs
 ```
 
 ## Performance

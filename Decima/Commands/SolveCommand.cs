@@ -1,4 +1,4 @@
-﻿namespace Decima.Commands;
+namespace Decima.Commands;
 
 using System.ComponentModel;
 
@@ -89,6 +89,11 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         [Description("Beam width for inference (higher = more accurate but slower, 1 = greedy/no beam search)")]
         [DefaultValue(2)]
         public int BeamWidth { get; init; }
+
+        [CommandOption("--guided")]
+        [Description("Use ML-guided backtracking solver (guarantees 100% accuracy)")]
+        [DefaultValue(false)]
+        public bool Guided { get; init; }
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -171,7 +176,17 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         // Load model and solve
         using var trainer = new SudokuTrainer(inferenceOnly: true);
         trainer.Verbose = false;
-        trainer.Load(settings.ModelPath);
+
+        try
+        {
+            trainer.Load(settings.ModelPath);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Failed to load model:[/] {settings.ModelPath}");
+            AnsiConsole.MarkupLine($"[dim]Error: {ex.Message}[/]");
+            return 1;
+        }
 
         SudokuGrid solution = default;
 
@@ -183,18 +198,27 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         else
         {
             // Beam search (default) - more accurate
-            var statusMessage = settings.BeamWidth > 1
-                ? $"Solving with beam search (width={settings.BeamWidth})..."
-                : "Solving...";
+            var statusMessage = settings.Guided
+                ? "Solving with ML-guided backtracking..."
+                : (settings.BeamWidth > 1
+                    ? $"Solving with beam search (width={settings.BeamWidth})..."
+                    : "Solving...");
 
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(Style.Parse("cyan"))
                 .Start(statusMessage, ctx =>
                 {
-                    solution = settings.BeamWidth > 1
-                        ? trainer.SolveWithBeamSearch(puzzle, settings.BeamWidth)
-                        : trainer.Solve(puzzle);
+                    if (settings.Guided)
+                    {
+                        solution = trainer.SolveHybrid(puzzle);
+                    }
+                    else
+                    {
+                        solution = settings.BeamWidth > 1
+                            ? trainer.SolveWithBeamSearch(puzzle, settings.BeamWidth)
+                            : trainer.Solve(puzzle);
+                    }
                 });
         }
 

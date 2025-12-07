@@ -94,12 +94,16 @@ public sealed class SudokuTrainer : IDisposable
 
         var curriculum = new CurriculumScheduler(minEmptyCells, maxEmptyCells, epochs, strategy);
 
+        // Cosine annealing learning rate scheduler: decays LR over epochs down to 10% of the initial rate
+        var scheduler = optim.lr_scheduler.CosineAnnealingLR(_optimizer, T_max: epochs, eta_min: _learningRate * 0.1);
+
         AnsiConsole.MarkupLine("[dim]Press [yellow]Escape[/] to stop training and save the model.[/]");
         if (useAugmentation)
         {
             AnsiConsole.MarkupLine("[dim]Data augmentation:[/] [green]enabled[/]");
         }
         AnsiConsole.MarkupLine($"[dim]Curriculum:[/] [cyan]{minEmptyCells}[/] → [cyan]{maxEmptyCells}[/] empty cells ({strategy})");
+        AnsiConsole.MarkupLine($"[dim]LR schedule:[/] Cosine annealing to {(_learningRate * 0.1):F6}");
         AnsiConsole.WriteLine();
 
         AnsiConsole.Progress()
@@ -163,13 +167,19 @@ public sealed class SudokuTrainer : IDisposable
                         batchTask.Increment(1);
                     }
 
+                    // Step LR scheduler once per epoch
+                    scheduler.step();
+
                     batchTask.StopTask();
                     ctx.Refresh();
 
                     var avgLoss = epochLoss / batchesPerEpoch;
                     var accuracy = (double)epochCorrect / epochTotal;
 
-                    epochTask.Description = $"[cyan]Epoch {epoch + 1}/{epochs}[/] Loss: {avgLoss:F4} Acc: {accuracy:P1} Empty: {currentEmpty}";
+                    // Report current LR from the first param group
+                    var currentLr = _optimizer.ParamGroups.First().LearningRate;
+
+                    epochTask.Description = $"[cyan]Epoch {epoch + 1}/{epochs}[/] Loss: {avgLoss:F4} Acc: {accuracy:P1} Empty: {currentEmpty} LR: {currentLr:F6}";
                     epochTask.Increment(1);
                 }
             });
@@ -496,6 +506,49 @@ public sealed class SudokuTrainer : IDisposable
         _model.train();
         return result;
     }
+
+    /// <summary>
+    /// Solves a puzzle using a hybrid ML-guided backtracking approach.
+    /// This guarantees 100% accuracy for solvable puzzles.
+    /// </summary>
+    public SudokuGrid SolveHybrid(SudokuGrid puzzle)
+    {
+        _model.eval();
+        using var _ = no_grad();
+
+        var input = puzzle.ToTensor(_device);
+        var output = _model.forward(input);
+        
+        // Get probabilities: [1, 9, 9, 9] -> [9, 9, 9]
+        var probsTensor = nn.functional.softmax(output, dim: 1).cpu().squeeze(0);
+        
+        // Convert to 3D array
+        var flatProbs = probsTensor.data<float>().ToArray();
+        var probabilities = new float[9, 9, 9];
+        
+        // Tensor layout is [digit, row, col]
+        for (var d = 0; d < 9; d++)
+        {
+            for (var r = 0; r < 9; r++)
+            {
+                for (var c = 0; c < 9; c++)
+                {
+                    probabilities[d, r, c] = flatProbs[d * 81 + r * 9 + c];
+                }
+            }
+        }
+
+        input.Dispose();
+        output.Dispose();
+        probsTensor.Dispose();
+
+        _model.train();
+
+        var result = SudokuGenerator.SolveGuided(puzzle, probabilities);
+        return result ?? puzzle;
+    }
+
+
 
     /// <summary>
     /// Solves a puzzle using beam search for higher accuracy.

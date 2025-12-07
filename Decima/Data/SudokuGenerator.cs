@@ -1,11 +1,13 @@
-﻿namespace Decima.Data;
+namespace Decima.Data;
 
 /// <summary>
 /// Generates valid Sudoku puzzles with unique solutions.
 /// </summary>
 public static class SudokuGenerator
 {
-    private static readonly Random s_random = new();
+    private static readonly ThreadLocal<Random> s_threadRandom = new(() => new Random());
+
+    private static Random s_random => s_threadRandom.Value!;
 
     /// <summary>
     /// Generates a complete, valid Sudoku solution.
@@ -187,6 +189,82 @@ public static class SudokuGenerator
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Solves a Sudoku puzzle using backtracking guided by probabilities.
+    /// This hybrid approach guarantees 100% accuracy (if solvable) and is much faster than standard backtracking.
+    /// </summary>
+    public static SudokuGrid? SolveGuided(SudokuGrid puzzle, float[,,] probabilities)
+    {
+        var cells = new int[SudokuGrid.TotalCells];
+        var span = puzzle.AsSpan();
+        span.CopyTo(cells);
+
+        // Pre-compute candidate order for each cell based on probabilities
+        var candidates = new int[SudokuGrid.TotalCells][];
+        for (var i = 0; i < SudokuGrid.TotalCells; i++)
+        {
+            if (cells[i] == 0)
+            {
+                var row = i / SudokuGrid.Size;
+                var col = i % SudokuGrid.Size;
+                
+                // Get digits sorted by probability (descending)
+                var cellProbs = new (int Digit, float Prob)[9];
+                for (var d = 0; d < 9; d++)
+                {
+                    cellProbs[d] = (d + 1, probabilities[d, row, col]);
+                }
+                
+                Array.Sort(cellProbs, (a, b) => b.Prob.CompareTo(a.Prob));
+                
+                candidates[i] = new int[9];
+                for(int j=0; j<9; j++) candidates[i][j] = cellProbs[j].Digit;
+            }
+        }
+
+        if (SolveBacktrackGuided(cells, 0, candidates))
+        {
+            return SudokuGrid.Parse(string.Concat(cells));
+        }
+
+        return null;
+    }
+
+    private static bool SolveBacktrackGuided(int[] cells, int position, int[][] candidates)
+    {
+        if (position == SudokuGrid.TotalCells)
+        {
+            return true;
+        }
+
+        // Skip filled cells
+        if (cells[position] != 0)
+        {
+            return SolveBacktrackGuided(cells, position + 1, candidates);
+        }
+
+        var row = position / SudokuGrid.Size;
+        var col = position % SudokuGrid.Size;
+
+        // Try candidates in probability order
+        foreach (var num in candidates[position])
+        {
+            if (IsValidPlacement(cells, row, col, num))
+            {
+                cells[position] = num;
+
+                if (SolveBacktrackGuided(cells, position + 1, candidates))
+                {
+                    return true;
+                }
+
+                cells[position] = 0;
+            }
+        }
+
+        return false;
     }
 
     private static bool SolveBacktrack(int[] cells, int position)

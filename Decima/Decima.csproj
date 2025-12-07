@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
-    <Version>0.0.1</Version>
+    <Version>0.0.2</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,7 +18,7 @@
     </PackageReference>
     <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
     <PackageReference Include="TorchSharp" Version="0.105.1" />
-    <PackageReference Include="TorchSharp-cuda-linux" Version="0.105.0" />
+    <PackageReference Include="TorchSharp-cuda-linux" Version="0.105.1" />
   </ItemGroup>
 
 </Project>
