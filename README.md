@@ -11,6 +11,7 @@ A GPU-accelerated Sudoku solver powered by deep learning, featuring a convolutio
 - **Genetic Algorithm**: Alternative solver with GPU-accelerated fitness evaluation
 - **Hybrid Mode**: Combines ML predictions with genetic algorithm refinement
 - **ML-Guided Backtracking**: Uses neural network to prioritize search order
+- **Ultra Solver**: Combined guided + hybrid GA fallback for maximum accuracy
 - **Interactive Play**: Terminal-based Sudoku game with real-time validation
 - **Beautiful UI**: Spectre.Console-powered terminal interface
 
@@ -98,6 +99,9 @@ dotnet run --project Decima solve --generate --hybrid
 
 # ML-guided backtracking (fast with ML prioritization)
 dotnet run --project Decima solve --generate --guided
+
+# Ultra solver (guided + GA fallback for maximum accuracy)
+dotnet run --project Decima solve --generate --ultra
 ```
 
 #### Solve Options
@@ -113,6 +117,7 @@ dotnet run --project Decima solve --generate --guided
 | `--ga` | false | Use genetic algorithm |
 | `--hybrid` | false | ML + GA hybrid solver |
 | `--guided` | false | ML-guided backtracking solver |
+| `--ultra` | false | Guided + hybrid GA fallback |
 
 ### Playing Sudoku
 

@@ -91,9 +91,14 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         public int BeamWidth { get; init; }
 
         [CommandOption("--guided")]
-        [Description("Use ML-guided backtracking solver (guarantees 100% accuracy)")]
+        [Description("Use ML-guided backtracking solver (guarantees valid solution)")]
         [DefaultValue(false)]
         public bool Guided { get; init; }
+
+        [CommandOption("--ultra")]
+        [Description("Ultimate solver: tries guided first, falls back to hybrid GA if needed")]
+        [DefaultValue(false)]
+        public bool Ultra { get; init; }
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -153,7 +158,11 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         AnsiConsole.WriteLine();
 
         // Route to appropriate solver
-        if (settings.UseGeneticAlgorithm || settings.UseHybrid)
+        if (settings.Ultra)
+        {
+            return SolveWithUltra(puzzle, knownSolution, settings, cancellationToken);
+        }
+        else if (settings.UseGeneticAlgorithm || settings.UseHybrid)
         {
             return SolveWithGeneticAlgorithm(puzzle, knownSolution, settings, cancellationToken);
         }
@@ -226,6 +235,134 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         DisplayResult(puzzle, solution, knownSolution, settings.Compare);
 
         return 0;
+    }
+
+    private int SolveWithUltra(SudokuGrid puzzle, SudokuGrid? knownSolution, Settings settings, CancellationToken cancellationToken)
+    {
+        // Check model exists
+        if (!File.Exists(settings.ModelPath))
+        {
+            AnsiConsole.MarkupLine($"[red]Model not found:[/] {settings.ModelPath}");
+            AnsiConsole.MarkupLine("[dim]Train a model first with:[/] [cyan]decima train[/]");
+            return 1;
+        }
+
+        SudokuGrid solution = default;
+        var usedFallback = false;
+
+        // Phase 1: Try ML-guided backtracking (fast + guaranteed if solvable)
+        AnsiConsole.MarkupLine("[dim]Phase 1: ML-guided backtracking...[/]");
+        
+        using (var trainer = new SudokuTrainer(inferenceOnly: true))
+        {
+            trainer.Verbose = false;
+
+            try
+            {
+                trainer.Load(settings.ModelPath);
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Failed to load model:[/] {ex.Message}");
+                return 1;
+            }
+
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("cyan"))
+                .Start("Solving with ML-guided backtracking...", ctx =>
+                {
+                    solution = trainer.SolveHybrid(puzzle);
+                });
+        }
+
+        // Check if guided solver succeeded
+        if (solution.IsComplete && solution.IsValid())
+        {
+            AnsiConsole.MarkupLine("[green]✓ Solved with ML-guided backtracking[/]");
+        }
+        else
+        {
+            // Phase 2: Fall back to hybrid GA
+            usedFallback = true;
+            AnsiConsole.MarkupLine("[yellow]⚠ Guided solver incomplete, falling back to hybrid GA...[/]");
+            AnsiConsole.WriteLine();
+
+            var options = new GeneticSolverOptions
+            {
+                PopulationSize = settings.PopulationSize,
+                MaxGenerations = settings.MaxGenerations,
+                MutationRate = settings.MutationRate,
+                IslandCount = settings.IslandCount,
+                UseGpu = true,
+                Verbose = false
+            };
+
+            // Use the partial solution from guided as starting point if it's better than original
+            var startingPuzzle = solution.EmptyCellCount < puzzle.EmptyCellCount && solution.IsValid() 
+                ? solution 
+                : puzzle;
+
+            using var solver = new GeneticSolver(options, settings.ModelPath);
+            var result = solver.SolveWithProgress(startingPuzzle, cancellationToken);
+            solution = result.Solution;
+
+            AnsiConsole.MarkupLine($"[dim]GA completed in {result.Generations} generations ({result.ElapsedTime.TotalSeconds:F2}s)[/]");
+        }
+
+        // Display result
+        AnsiConsole.WriteLine();
+        var title = usedFallback ? "Ultra Solution (Guided + GA)" : "Ultra Solution (Guided)";
+        AnsiConsole.Write(SudokuGridRenderer.RenderWithBoxes(solution, puzzle, title: title));
+        AnsiConsole.WriteLine();
+
+        // Validation
+        if (solution.IsComplete && solution.IsValid())
+        {
+            AnsiConsole.MarkupLine("[bold green]✓ Valid solution![/]");
+        }
+        else if (!solution.IsComplete)
+        {
+            var empty = solution.EmptyCellCount;
+            AnsiConsole.MarkupLine($"[bold yellow]⚠ Incomplete: {empty} cells remaining[/]");
+        }
+        else
+        {
+            var conflicts = SudokuValidator.GetAllConflicts(solution);
+            AnsiConsole.MarkupLine($"[bold red]✗ Invalid: {conflicts.Count} conflicting cells[/]");
+        }
+
+        // Compare with known solution
+        if (knownSolution.HasValue)
+        {
+            var correct = 0;
+            var total = 0;
+
+            for (var row = 0; row < 9; row++)
+            {
+                for (var col = 0; col < 9; col++)
+                {
+                    if (puzzle[row, col] == 0)
+                    {
+                        total++;
+                        if (solution[row, col] == knownSolution.Value[row, col])
+                        {
+                            correct++;
+                        }
+                    }
+                }
+            }
+
+            AnsiConsole.MarkupLine($"[dim]Accuracy vs generated solution:[/] {correct}/{total} ({(double)correct / total:P1})");
+        }
+
+        if (settings.Compare)
+        {
+            AnsiConsole.WriteLine();
+            SolveAnimation.CompareWithBacktracking(puzzle, solution);
+        }
+
+        return solution.IsComplete && solution.IsValid() ? 0 : 1;
     }
 
     private int SolveWithGeneticAlgorithm(SudokuGrid puzzle, SudokuGrid? knownSolution, Settings settings, CancellationToken cancellationToken)
