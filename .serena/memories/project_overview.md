@@ -6,7 +6,7 @@ Decima is a Sudoku solver application that uses machine learning (neural network
 ## Tech Stack
 - **Framework:** .NET 10.0 (preview)
 - **Language:** C# with latest language features
-- **ML Framework:** TorchSharp 0.105.1 with CUDA support (Linux)
+- **ML Framework:** TorchSharp 0.105.1 with CUDA support (TorchSharp-cuda-linux 0.105.1)
 - **CLI Framework:** Spectre.Console.Cli for command-line interface
 - **UI:** Spectre.Console for rich terminal output (colors, tables, figlet text)
 - **Utilities:** Dunet 1.11.3 for discriminated unions

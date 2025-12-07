@@ -99,6 +99,16 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         [Description("Ultimate solver: tries guided first, falls back to hybrid GA if needed")]
         [DefaultValue(false)]
         public bool Ultra { get; init; }
+
+        [CommandOption("--iterative")]
+        [Description("Use iterative refinement solver (re-runs inference after each cell fill)")]
+        [DefaultValue(false)]
+        public bool Iterative { get; init; }
+
+        [CommandOption("--max-backtracks <COUNT>")]
+        [Description("Maximum backtracks for iterative solver (0 = greedy)")]
+        [DefaultValue(100)]
+        public int MaxBacktracks { get; init; }
     }
 
     public override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -207,18 +217,24 @@ public sealed class SolveCommand : Command<SolveCommand.Settings>
         else
         {
             // Beam search (default) - more accurate
-            var statusMessage = settings.Guided
-                ? "Solving with ML-guided backtracking..."
-                : (settings.BeamWidth > 1
-                    ? $"Solving with beam search (width={settings.BeamWidth})..."
-                    : "Solving...");
+            var statusMessage = settings.Iterative
+                ? $"Solving with iterative refinement (backtracks={settings.MaxBacktracks})..."
+                : settings.Guided
+                    ? "Solving with ML-guided backtracking..."
+                    : (settings.BeamWidth > 1
+                        ? $"Solving with beam search (width={settings.BeamWidth})..."
+                        : "Solving...");
 
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(Style.Parse("cyan"))
                 .Start(statusMessage, ctx =>
                 {
-                    if (settings.Guided)
+                    if (settings.Iterative)
+                    {
+                        solution = trainer.SolveIterative(puzzle, settings.MaxBacktracks);
+                    }
+                    else if (settings.Guided)
                     {
                         solution = trainer.SolveHybrid(puzzle);
                     }

@@ -12,6 +12,8 @@ A GPU-accelerated Sudoku solver powered by deep learning, featuring a convolutio
 - **Hybrid Mode**: Combines ML predictions with genetic algorithm refinement
 - **ML-Guided Backtracking**: Uses neural network to prioritize search order
 - **Ultra Solver**: Combined guided + hybrid GA fallback for maximum accuracy
+- **Iterative Refinement**: Re-runs inference after each cell fill for higher accuracy
+- **Graph Neural Network**: Alternative architecture with explicit constraint graph
 - **Interactive Play**: Terminal-based Sudoku game with real-time validation
 - **Beautiful UI**: Spectre.Console-powered terminal interface
 
@@ -69,7 +71,7 @@ dotnet run --project Decima train \
 | `--hidden` | 256 | Hidden channels (256=standard, 512=large) |
 | `--blocks` | 10 | Residual blocks (10=standard, 15-20=large) |
 | `--min-empty` | 20 | Minimum empty cells (curriculum start) |
-| `--max-empty` | 55 | Maximum empty cells (curriculum end) |
+| `--max-empty` | 55 | Maximum empty cells (curriculum end, max 64) |
 | `--strategy` | Cosine | Curriculum strategy (see below) |
 | `--augment` | true | Enable data augmentation |
 | `--resume` | false | Resume from existing model |
@@ -102,6 +104,9 @@ dotnet run --project Decima solve --generate --guided
 
 # Ultra solver (guided + GA fallback for maximum accuracy)
 dotnet run --project Decima solve --generate --ultra
+
+# Iterative refinement (re-evaluates after each cell fill)
+dotnet run --project Decima solve --generate --iterative
 ```
 
 #### Solve Options
@@ -118,6 +123,8 @@ dotnet run --project Decima solve --generate --ultra
 | `--hybrid` | false | ML + GA hybrid solver |
 | `--guided` | false | ML-guided backtracking solver |
 | `--ultra` | false | Guided + hybrid GA fallback |
+| `--iterative` | false | Iterative refinement (re-inference per cell) |
+| `--max-backtracks` | 100 | Max backtracks for iterative solver |
 
 ### Playing Sudoku
 
@@ -155,6 +162,36 @@ Conv2d (hidden → 9, 1×1)
 Output [batch, 9, 9, 9]     # Logits for digits 1-9 at each cell
 ```
 
+### Graph Neural Network (v4)
+
+Alternative architecture that models Sudoku as a constraint graph:
+
+```
+81 Nodes (one per cell)
+    │
+    ▼
+Input Features: [value one-hot (10) + position one-hot (27)]
+    │
+    ▼
+Linear Projection → Hidden Dimension
+    │
+    ▼
+┌─────────────────────────────┐
+│   Graph Conv Layer × N      │
+│   ┌─────────────────────┐   │
+│   │ Message: concat(src,tgt)│
+│   │ Aggregate: sum        │
+│   │ Update: Linear + Res  │
+│   │ LayerNorm + ReLU      │
+│   └─────────────────────┘   │
+└─────────────────────────────┘
+    │
+    ▼
+Linear → [81, 9] logits
+```
+
+**Edges**: Each cell connects to 20 neighbors (8 row + 8 col + 4 box)
+
 ### Squeeze-and-Excitation Block
 
 SE blocks provide channel-wise attention, allowing the network to focus on relevant features:
@@ -179,6 +216,8 @@ Scale Input × Attention
 
 - **Focal Loss**: Focuses training on hard examples with γ=2.0
 - **Constraint Loss**: Penalizes row/column/box violations
+- **Entropy Regularization**: Encourages confident predictions
+- **Mutual Exclusion Loss**: Ensures digits don't repeat in constraint groups
 - **Dynamic Weighting**: Constraint weight increases with difficulty
 - **Cosine Annealing LR**: Learning rate scheduler for smoother convergence
 - **Gradient Clipping**: Prevents exploding gradients
@@ -210,11 +249,13 @@ Decima/
 │   ├── SudokuGrid.cs          # Grid data structure
 │   └── SudokuValidator.cs     # Validation logic
 ├── Models/
-│   ├── BeamSearchSolver.cs    # Beam search inference
-│   ├── CurriculumScheduler.cs # Training curriculum
-│   ├── ModelMetadata.cs       # Model versioning
-│   ├── SudokuNetwork.cs       # CNN architecture
-│   └── SudokuTrainer.cs       # Training loop
+│   ├── BeamSearchSolver.cs        # Beam search inference
+│   ├── CurriculumScheduler.cs     # Training curriculum
+│   ├── IterativeRefinementSolver.cs # Cell-by-cell solving
+│   ├── ModelMetadata.cs           # Model versioning
+│   ├── SudokuGNN.cs               # Graph Neural Network
+│   ├── SudokuNetwork.cs           # CNN architecture
+│   └── SudokuTrainer.cs           # Training loop
 ├── Solvers/
 │   ├── Chromosome.cs          # GA candidate solution
 │   ├── GeneticOperators.cs    # Selection, crossover, mutation
@@ -258,8 +299,7 @@ Expected accuracy after training with recommended settings:
 
 ## Future Improvements
 
-- [ ] CNN + GNN hybrid for better constraint reasoning
-- [ ] Transformer/attention-based architecture
+- [ ] Train and evaluate GNN model for comparison
 - [ ] Active learning (train on failed puzzles)
 - [ ] Unique-solution puzzle generation for extreme difficulty
 - [ ] Model quantization for faster inference

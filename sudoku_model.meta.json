@@ -1,5 +1,5 @@
 {
-  "Version": 2,
+  "Version": 3,
   "InputChannels": 10,
   "HiddenChannels": 512,
   "OutputChannels": 9,

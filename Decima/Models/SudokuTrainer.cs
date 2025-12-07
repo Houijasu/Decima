@@ -399,12 +399,10 @@ public sealed class SudokuTrainer : IDisposable
 
         var loss = zeros(1, device: probs.device);
 
+        // === ORIGINAL CONSTRAINT LOSSES ===
+        
         // Row constraint: sum probabilities for each digit across columns
-        // probs: [batch, 9, 9, 9] -> [batch, digit, row, col]
-        // Sum over columns (dim 3) for each digit in each row
         var rowSums = probs.sum(dim: 3); // [batch, 9, 9] - for each digit, sum across cols in each row
-        // Each digit should appear once per row, so sum should be 1
-        // Penalize deviation from 1
         loss = loss + ((rowSums - 1.0f).pow(2)).mean();
 
         // Column constraint: sum probabilities for each digit across rows
@@ -412,10 +410,40 @@ public sealed class SudokuTrainer : IDisposable
         loss = loss + ((colSums - 1.0f).pow(2)).mean();
 
         // Box constraint: sum probabilities for each digit in each 3x3 box
-        // Reshape to [batch, 9, 3, 3, 3, 3] then sum within boxes
         var probsReshaped = probs.reshape([-1, 9, 3, 3, 3, 3]);
         var boxSums = probsReshaped.sum(dim: [2, 4]); // [batch, 9, 3, 3] - sum within each 3x3 box
         loss = loss + ((boxSums - 1.0f).pow(2)).mean();
+
+        // === ENHANCED CONSTRAINT LOSSES ===
+
+        // 1. Entropy regularization: encourage confident predictions (low entropy)
+        // H = -sum(p * log(p)) per cell, we want to minimize this
+        var logProbs = (probs + 1e-8f).log();
+        var entropy = -(probs * logProbs).sum(dim: 1); // [batch, 9, 9] entropy per cell
+        var entropyLoss = entropy.mean() * 0.1f; // Scale factor to balance with other losses
+        loss = loss + entropyLoss;
+
+        // 2. Cell uniqueness: each cell should have exactly one digit (sum of probs per cell = 1)
+        // This is already enforced by softmax, but we add explicit pressure
+        var cellSums = probs.sum(dim: 1); // [batch, 9, 9] - should be 1.0 everywhere
+        var cellUniqueness = ((cellSums - 1.0f).pow(2)).mean();
+        loss = loss + cellUniqueness;
+
+        // 3. Mutual exclusion loss: if one cell has high prob for digit d, 
+        // neighbors in same row/col/box should have low prob for d
+        // Implemented as: variance of max probabilities across constraint groups should be high
+        // (one cell "wins" each digit in each constraint group)
+        var maxProbs = probs.amax(1); // [batch, 9, 9] - max prob per cell
+        
+        // Row mutual exclusion: max probs in each row should have one clear winner per digit position
+        var rowMaxVar = maxProbs.var(2).mean(); // Variance across columns in each row
+        
+        // Column mutual exclusion
+        var colMaxVar = maxProbs.var(1).mean(); // Variance across rows in each column
+        
+        // Higher variance is better (one cell dominates), so we minimize negative variance
+        var mutualExclusionLoss = -0.05f * (rowMaxVar + colMaxVar);
+        loss = loss + mutualExclusionLoss;
 
         return loss;
     }
@@ -558,6 +586,18 @@ public sealed class SudokuTrainer : IDisposable
     public SudokuGrid SolveWithBeamSearch(SudokuGrid puzzle, int beamWidth = 5)
     {
         var solver = new BeamSearchSolver(_model, _device, beamWidth);
+        return solver.Solve(puzzle);
+    }
+
+    /// <summary>
+    /// Solves a puzzle using iterative refinement - fills one cell at a time with re-inference.
+    /// This approach re-evaluates the network after each fill for better accuracy on hard puzzles.
+    /// </summary>
+    /// <param name="puzzle">The puzzle to solve.</param>
+    /// <param name="maxBacktracks">Maximum backtracking steps (0 = greedy, no backtracking).</param>
+    public SudokuGrid SolveIterative(SudokuGrid puzzle, int maxBacktracks = 100)
+    {
+        var solver = new IterativeRefinementSolver(_model, _device, maxBacktracks);
         return solver.Solve(puzzle);
     }
 

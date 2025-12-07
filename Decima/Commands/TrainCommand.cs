@@ -44,7 +44,7 @@ public sealed class TrainCommand : Command<TrainCommand.Settings>
         public int MinEmptyCells { get; init; }
 
         [CommandOption("--max-empty <COUNT>")]
-        [Description("Maximum empty cells for curriculum learning (hardest)")]
+        [Description("Maximum empty cells for curriculum learning (hardest, max 64 = 17 clues)")]
         [DefaultValue(55)]
         public int MaxEmptyCells { get; init; }
 
@@ -108,6 +108,19 @@ public sealed class TrainCommand : Command<TrainCommand.Settings>
             AnsiConsole.MarkupLine($"[yellow]Warning: --resume specified but model file '{settings.OutputPath}' not found. Starting fresh.[/]");
         }
 
+        // Validate empty cell ranges
+        var minEmpty = Math.Clamp(settings.MinEmptyCells, 17, 64);
+        var maxEmpty = Math.Clamp(settings.MaxEmptyCells, 17, 64);
+        if (minEmpty > maxEmpty)
+        {
+            AnsiConsole.MarkupLine("[red]Error: --min-empty cannot be greater than --max-empty[/]");
+            return 1;
+        }
+        if (maxEmpty > 60)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Note: Training with {maxEmpty} empty cells (extreme difficulty). This may require more epochs.[/]");
+        }
+
         // Display configuration
         var table = new Table()
             .Border(TableBorder.Rounded)
@@ -121,7 +134,7 @@ public sealed class TrainCommand : Command<TrainCommand.Settings>
 
         if (settings.UseCurriculum)
         {
-            table.AddRow("Curriculum", $"[green]{settings.MinEmptyCells} → {settings.MaxEmptyCells} empty ({settings.Strategy})[/]");
+            table.AddRow("Curriculum", $"[green]{minEmpty} → {maxEmpty} empty ({settings.Strategy})[/]");
         }
         else
         {
@@ -169,8 +182,8 @@ public sealed class TrainCommand : Command<TrainCommand.Settings>
                 settings.Epochs,
                 settings.BatchSize,
                 settings.SamplesPerEpoch,
-                settings.MinEmptyCells,
-                settings.MaxEmptyCells,
+                minEmpty,
+                maxEmpty,
                 settings.UseAugmentation,
                 settings.Strategy);
         }
